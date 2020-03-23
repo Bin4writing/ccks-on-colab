@@ -165,7 +165,6 @@ def freeze_bert_layers(l_bert):
             layer.trainable = True
         elif len(layer._layers) == 0:
             layer.trainable = False
-        layer.trainable = False
     l_bert.embeddings_layer.trainable = False
 
 
@@ -257,7 +256,7 @@ def create_estimator(steps=None, warmup_steps=None, model_dir=args.model_dir, nu
         output_prob = tf.keras.layers.Softmax(name='output_prob')(logits)
         model = tf.keras.Model(inputs=[input_token_ids, input_segment_ids, input_mask], outputs=[logits])
         model.build(input_shape=[(None, max_seq_len,), (None, max_seq_len,), (None, max_seq_len,)])
-        freeze_bert_layers(l_bert)
+        # freeze_bert_layers(l_bert)
         bert.load_stock_weights(l_bert, op.join(model_dir, 'bert_model.ckpt'))
         weight_decays = get_weight_decays(model)
         for k, v in weight_decays.items():

@@ -11,7 +11,7 @@ data_dir = os.path.join(file_path, 'extra_data/')
 
 do_lower_case=True
 num_labels=2
-warmup_steps=200
+warmup_steps=None
 keras_model_path=op.join(output_dir,'keras_model.h5')
 
 num_train_epochs = 10
