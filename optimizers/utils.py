@@ -86,7 +86,7 @@ def _apply_weight_decays(cls, var, var_t):
 
 def _compute_eta_t(cls):
     PI = 3.141592653589793
-    t_frac = K.cast(cls.iter_updates / cls.total_iterations, 'float32')
+    t_frac = K.cast(K.cast(cls.iter_updates,'float32') / cls.total_iterations, 'float32')
     eta_t = cls.eta_min + 0.5 * (cls.eta_max - cls.eta_min) * \
         (1 + K.cos(PI * t_frac))
     return eta_t

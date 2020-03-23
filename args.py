@@ -11,12 +11,14 @@ data_dir = os.path.join(file_path, 'extra_data/')
 
 do_lower_case=True
 num_labels=2
-warmup_steps=None
+warmup_steps=400
 keras_model_path=op.join(output_dir,'keras_model.h5')
 
 num_train_epochs = 10
-batch_size = 64
-learning_rate = 0.00005
+batch_size = 16
+learning_rate = 0.000025
+prune_enabled=False
+prune_logdir=os.path.join(file_path,'prune_log')
 
 # gpu使用率
 gpu_memory_fraction = 0.8

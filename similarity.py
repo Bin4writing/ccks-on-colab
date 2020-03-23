@@ -20,6 +20,10 @@ from optimizers.utils import get_weight_decays
 import numpy as np
 import tensorflow.keras.backend as K
 import click
+import tensorflow_model_optimization as tfmot
+from tensorflow_model_optimization.sparsity import keras as sparsity
+from tensorflow_model_optimization.python.core.sparsity.keras.pruning_wrapper import PruneLowMagnitude
+import tensorflow.keras.backend as K
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -238,9 +242,14 @@ def create_estimator(steps=None, warmup_steps=None, model_dir=args.model_dir, nu
         if warmup_steps is None:
             custom_objects = {
                 'BertModelLayer': bert.BertModelLayer,
-                'AdamW': AdamW
+                'AdamW': AdamW,
+                'PruneLowMagnitude': PruneLowMagnitude
             }
-            model = tf.keras.models.load_model(h5py.File(args.keras_model_path), custom_objects=custom_objects)
+            if args.prune_enabled:
+              with sparsity.prune_scope():
+                model = tf.keras.models.load_model(h5py.File(args.keras_model_path), custom_objects=custom_objects)
+            else:
+              model = tf.keras.models.load_model(h5py.File(args.keras_model_path), custom_objects=custom_objects)
             estimator = tf.keras.estimator.model_to_estimator(model, model_dir=args.output_dir)
             return estimator, model
         input_token_ids = tf.keras.Input((max_seq_len,), dtype=tf.int32, name='input_ids')
@@ -252,7 +261,21 @@ def create_estimator(steps=None, warmup_steps=None, model_dir=args.model_dir, nu
         first_token = tf.keras.layers.Lambda(lambda seq: seq[:, 0, :])(bert_output)
         pooled_output = tf.keras.layers.Dense(units=first_token.shape[-1], activation=tf.math.tanh)(first_token)
         dropout = tf.keras.layers.Dropout(rate=0.1)(pooled_output)
-        logits = tf.keras.layers.Dense(units=num_labels, name='label_ids')(dropout)
+        pruning_params = {
+          'pruning_schedule': sparsity.PolynomialDecay(initial_sparsity=0.50,
+                                                   final_sparsity=0.90,
+                                                   begin_step=1000,
+                                                   end_step=2000,
+                                                   frequency=100)
+        }
+        dense = tf.keras.layers.Dense(units=num_labels, name='label_ids')
+        if args.prune_enabled:
+          pruned_dense = sparsity.prune_low_magnitude(
+            dense,
+            **pruning_params)
+          logits = pruned_dense(dropout)
+        else:
+          logits = dense(dropout)
         output_prob = tf.keras.layers.Softmax(name='output_prob')(logits)
         model = tf.keras.Model(inputs=[input_token_ids, input_segment_ids, input_mask], outputs=[logits])
         model.build(input_shape=[(None, max_seq_len,), (None, max_seq_len,), (None, max_seq_len,)])
@@ -272,7 +295,7 @@ def create_estimator(steps=None, warmup_steps=None, model_dir=args.model_dir, nu
         )
         model.compile(
             optimizer=opt,
-            loss={'label_ids': tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)},
+            loss={"{}label_ids".format('prune_low_magnitude_' if args.prune_enabled else ''): tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)},
             # for numerical stability
             metrics=[tf.keras.metrics.SparseCategoricalAccuracy()]
         )
@@ -581,7 +604,7 @@ class BertSim:
             features["input_ids"] = create_int_feature(feature.input_ids)
             features["input_mask"] = create_int_feature(feature.input_mask)
             features["segment_ids"] = create_int_feature(feature.segment_ids)
-            features["label_ids"] = create_int_feature([feature.label_id])
+            features["{}label_ids".format('prune_low_magnitude_' if args.prune_enabled else '')] = create_int_feature([feature.label_id])
 
             tf_example = tf.train.Example(features=tf.train.Features(feature=features))
             writer.write(tf_example.SerializeToString())
@@ -596,7 +619,7 @@ class BertSim:
         }
 
         name_to_labels = {
-            "label_ids": tf.io.FixedLenFeature([], tf.int64),
+            "{}label_ids".format('prune_low_magnitude_' if args.prune_enabled else ''): tf.io.FixedLenFeature([], tf.int64),
         }
 
         def _decode_record(record, name_to_columns):
@@ -668,14 +691,26 @@ class BertSim:
         #     min_steps=num_train_steps)
 
         # estimator.train(input_fn=train_input_fn, hooks=[early_stopping])
-        estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
-        feature_columns = [tf.feature_column.numeric_column(x) for x in ['input_ids', 'input_mask', 'segment_ids']]
-        serving_input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
-            tf.feature_column.make_parse_example_spec(feature_columns))
-        estimator.export_saved_model(
-            export_dir_base=args.output_dir,
-            serving_input_receiver_fn=serving_input_fn,
-            experimental_mode=tf.estimator.ModeKeys.EVAL)
+        if args.prune_enabled:
+          class WarmRestart(tf.keras.callbacks.Callback):
+            def on_epoch_end(self, epoch, logs={}):
+              K.set_value(model.optimizer.iter_updates, 0)
+          callbacks = [
+                sparsity.UpdatePruningStep(),
+                sparsity.PruningSummaries(log_dir=args.prune_logdir, profile_batch=0),
+                WarmRestart()
+          ]
+          # smart keras
+          model.fit(train_input_fn(None),epochs=args.num_train_epochs,steps_per_epoch=int(len(train_examples)/args.batch_size),verbose=1,callbacks=callbacks)
+        else:
+          estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+          feature_columns = [tf.feature_column.numeric_column(x) for x in ['input_ids', 'input_mask', 'segment_ids']]
+          serving_input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
+              tf.feature_column.make_parse_example_spec(feature_columns))
+          estimator.export_saved_model(
+              export_dir_base=args.output_dir,
+              serving_input_receiver_fn=serving_input_fn,
+              experimental_mode=tf.estimator.ModeKeys.EVAL)
         model.reset_metrics()
         model.save(args.keras_model_path)
 
@@ -712,6 +747,8 @@ class BertSim:
         feature_columns = [tf.feature_column.numeric_column(x) for x in ['input_ids', 'input_mask', 'segment_ids']]
         serving_input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
             tf.feature_column.make_parse_example_spec(feature_columns))
+        if args.prune_enabled:
+          model = sparsity.strip_pruning(model)
         estimator.export_saved_model(
             export_dir_base=args.output_dir,
             serving_input_receiver_fn=serving_input_fn,
