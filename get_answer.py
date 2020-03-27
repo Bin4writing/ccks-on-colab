@@ -249,7 +249,7 @@ def get_answer_candidates(corpus_dict: TYPE_CORPUS_DICT):
         corpus = ac.add_candidates_to_corpus(Corpus(path, name))
         corpus.save('data/candidate_answer_{}.pkl'.format(name))
         corpus_dict[name] = corpus
-    # ac.cache_similarity_query()
+    ac.cache_similarity_query()
     # ac.cache_relation_paths()
     return corpus_dict
 
