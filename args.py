@@ -31,3 +31,7 @@ max_seq_len = 55
 
 # graph名字
 graph_file = 'tmp/result/graph'
+
+pool_strategy = 'cls'
+
+enable_early_stopping = False
