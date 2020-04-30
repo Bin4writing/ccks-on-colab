@@ -713,7 +713,9 @@ class BertSim:
             model.fit(train_input_fn(None), epochs=args.num_train_epochs,
                       steps_per_epoch=int(len(train_examples) / args.batch_size), verbose=1, callbacks=callbacks)
         else:
-            estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+            early_stop = tf.estimator.experimental.early_stopping.stop_if_no_decrease_hook(estimator, "loss", 100000)
+            hooks = [early_stop]
+            estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
             feature_columns = [tf.feature_column.numeric_column(x) for x in ['input_ids', 'input_mask', 'segment_ids']]
             serving_input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
                 tf.feature_column.make_parse_example_spec(feature_columns))
