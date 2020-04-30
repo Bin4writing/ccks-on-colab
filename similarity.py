@@ -259,9 +259,13 @@ def create_estimator(steps=None, warmup_steps=None, model_dir=args.model_dir, nu
         bert_params = bert.params_from_pretrained_ckpt(model_dir)
         l_bert = bert.BertModelLayer.from_params(bert_params)
         bert_output = l_bert(inputs=[input_token_ids, input_segment_ids], mask=input_mask)
-        first_token = tf.keras.layers.Lambda(lambda seq: seq[:, 0, :])(bert_output)
-        pooled_output = tf.keras.layers.Dense(units=first_token.shape[-1], activation=tf.math.tanh)(first_token)
-        dropout = tf.keras.layers.Dropout(rate=0.1)(pooled_output)
+        if args.pool_strategy == 'cls':
+            first_token = tf.keras.layers.Lambda(lambda seq: seq[:, 0, :])(bert_output)
+            pooled_output = tf.keras.layers.Dense(units=first_token.shape[-1], activation=tf.math.tanh)(first_token)
+            dropout = tf.keras.layers.Dropout(rate=0.1)(pooled_output)
+        elif args.pool_strategy == 'avg':
+            seq1_tokens = tf.keras.layers.Lambda(lambda seq: seq[:,1:args.max_seq_len-1,:])(bert_output)
+            seq2_tokens = tf.keras.layers.Lambda(lambda seq: seq[:,args.max_seq_len:2*args.max_seq_len])
         pruning_params = {
             'pruning_schedule': sparsity.PolynomialDecay(initial_sparsity=0.50,
                                                          final_sparsity=0.90,
@@ -715,9 +719,11 @@ class BertSim:
             model.fit(train_input_fn(None), epochs=args.num_train_epochs,
                       steps_per_epoch=int(len(train_examples) / args.batch_size), verbose=1, callbacks=callbacks)
         else:
-            import early_stopping
-            early_stop = early_stopping.stop_if_no_decrease_hook(estimator, "loss", 2000)
-            hooks = [early_stop]
+            hooks = []
+            if args.enable_early_stopping:
+                import early_stopping
+                early_stop = early_stopping.stop_if_no_decrease_hook(estimator, "loss", 2000)
+                hooks.append(early_stop)
             estimator.train(input_fn=train_input_fn, max_steps=num_train_steps, hooks=hooks)
             feature_columns = [tf.feature_column.numeric_column(x) for x in ['input_ids', 'input_mask', 'segment_ids']]
             serving_input_fn = tf.estimator.export.build_parsing_serving_input_receiver_fn(
